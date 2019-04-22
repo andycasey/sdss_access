@@ -7,6 +7,7 @@ import ast
 import inspect
 import pathlib
 import six
+from collections import Counter
 from glob import glob
 from os.path import join
 from random import choice, sample
@@ -208,49 +209,45 @@ class BasePath(object):
         if re.search('%plateid6', template):
             template = re.sub('%plateid6', '{plateid:0>6}', template)
 
+ 
         # check if template has any brackets
         haskwargs = re.search('[{}]', template)
         if not haskwargs:
             return None
 
-        # escape the envvar $ and any dots
-        subtemp = template.replace('$', '\\$').replace('.', '\\.')
-        # define search pattern; replace all template keywords with regex "(.*)" group
-        research = re.sub('{(.*?)}', '(.*)', subtemp)
-        # look for matches in template and example
-        pmatch = re.search(research, template)
-        tmatch = re.search(research, example)
+        # escape the envvar $, any dots, and forward slashes
+        subtemp = template.replace('$', '\\$') \
+                          .replace('.', '\\.') \
+                          .replace('/', '\/')
 
-        path_dict = {}
-        # if example match extract keys and values from the match groups
-        if tmatch:
-            values = tmatch.groups(0)
-            keys = pmatch.groups(0)
-            assert len(keys) == len(values), 'pattern and template matches must have same length'
-            parts = zip(keys, values)
-            # parse into dictionary
-            for part in parts:
-                value = part[1]
-                if re.findall('{(.*?)}', part[0]):
-                    # get the key name inside the brackets
-                    keys = re.findall('{(.*?)}', part[0])
-                    # remove the type : designation
-                    keys = [k.split(':')[0] for k in keys]
-                    # handle double bracket edge cases; remove this when better solution found
-                    if len(keys) > 1:
-                        if keys[0] == 'dr':
-                            # for {dr}{version}
-                            drval = re.match('^DR[1-9][0-9]', value).group(0)
-                            otherval = value.split(drval)[-1]
-                            pdict = {keys[0]: drval, keys[1]: otherval}
-                        elif keys[0] in ['rc', 'br', 'filter', 'camrow']:
-                            # for {camrow}{camcol}, {filter}{camcol}, {br}{id}, etc
-                            pdict = {keys[0]: value[0], keys[1]: value[1:]}
-                        else:
-                            raise ValueError('This case has not yet been accounted for.')
-                        path_dict.update(pdict)
-                    else:
-                        path_dict[keys[0]] = value
+        # define named search pattern.
+        named_search = re.sub('{(\w+)}', '(?P<\\1>[\\w\\d+-_]+)', subtemp)
+
+        # fix duplicates by prepending '_' to them.
+        named_terms = re.findall("<\w+>", named_search)
+        for term, count in Counter(named_terms).items():
+            if count > 1:
+                for i in range(count - 1):
+                    _ = "_" * (1 + i)
+                    new_term = f"<{_}{term.strip('<>')}>"
+                    named_search = named_search.replace(term, new_term, 1)
+
+
+        match = re.compile(named_search).search(example)
+        if match is None:
+            return dict()
+
+        path_dict = match.groupdict()
+
+        # remove duplicates.
+        duplicate_keys = []
+        for k, v in path_dict.items():
+            if k.startswith("_") and k.lstrip("_") in path_dict and v == path_dict[k.lstrip("_")]:
+                duplicate_keys.append(k)
+
+        for key in duplicate_keys:
+            path_dict.pop(key)
+
         return path_dict
 
     def dir(self, filetype, **kwargs):
