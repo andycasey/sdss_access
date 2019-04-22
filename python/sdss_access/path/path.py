@@ -184,8 +184,58 @@ class BasePath(object):
         '''
         return self.templates.keys()
 
-    def extract(self, name, example):
-        ''' Extract keywords from an example path '''
+
+    def identify(self, example, strict=True, names=None):
+        """Identify the template that matches the example path.
+
+        Parameters
+        ----------
+        example : str
+            An example path of a data product.
+
+        Optional arguments
+        ------------------
+        strict : bool
+            Require strict absolute paths. If `False`, only the basename will
+            be used to extract keywords.
+
+        names : tuple
+            A tuple of template names to identify against. If `None` is given
+            then all templates will be used.
+        """
+
+        if names is None:
+            names = self.lookup_names()
+
+        matches = dict()
+        for name in names:
+            path_dict = self.extract(name, example, strict=strict)
+            if path_dict:
+                matches[name] = path_dict
+
+        return matches
+
+
+    def extract(self, name, example, strict=True):
+        """Extract keywords from an example path using a named template.
+
+        Parameters
+        ----------
+        name : str
+            A valid template name listed in `BasePath.lookup_names()`.
+
+        example : str
+            An example path to extract keywords from.
+
+        Optional arguments
+        ------------------
+        strict : bool
+            Require strict absolute paths. If `False`, only the basename will
+            be used to extract keywords.
+
+        Returns:
+            A dictionary of the extracted keywords.
+        """
 
         # ensure example is a string
         if isinstance(example, pathlib.Path):
@@ -196,59 +246,17 @@ class BasePath(object):
         assert name in self.lookup_names(), '{0} must be a valid template name'.format(name)
         template = self.templates[name]
 
-        # expand the environment variable
+        # expand the environment variables
         template = os.path.expandvars(template)
 
-        # handle special functions; perform a drop in replacement
-        if re.match('%spectrodir', template):
-            template = re.sub('%spectrodir', os.environ['BOSS_SPECTRO_REDUX'], template)
-        elif re.search('%platedir', template):
-            template = re.sub('%platedir', '(.*)/{plateid:0>6}', template)
-        elif re.search('%definitiondir', template):
-            template = re.sub('%definitiondir', '{designid:0>6}', template)
-        if re.search('%plateid6', template):
-            template = re.sub('%plateid6', '{plateid:0>6}', template)
-
- 
-        # check if template has any brackets
-        haskwargs = re.search('[{}]', template)
-        if not haskwargs:
-            return None
-
-        # escape the envvar $, any dots, and forward slashes
-        subtemp = template.replace('$', '\\$') \
-                          .replace('.', '\\.') \
-                          .replace('/', '\/')
-
-        # define named search pattern.
-        named_search = re.sub('{(\w+)}', '(?P<\\1>[\\w\\d+-_]+)', subtemp)
-
-        # fix duplicates by prepending '_' to them.
-        named_terms = re.findall("<\w+>", named_search)
-        for term, count in Counter(named_terms).items():
-            if count > 1:
-                for i in range(count - 1):
-                    _ = "_" * (1 + i)
-                    new_term = f"<{_}{term.strip('<>')}>"
-                    named_search = named_search.replace(term, new_term, 1)
-
-
-        match = re.compile(named_search).search(example)
-        if match is None:
-            return dict()
-
-        path_dict = match.groupdict()
-
-        # remove duplicates.
-        duplicate_keys = []
-        for k, v in path_dict.items():
-            if k.startswith("_") and k.lstrip("_") in path_dict and v == path_dict[k.lstrip("_")]:
-                duplicate_keys.append(k)
-
-        for key in duplicate_keys:
-            path_dict.pop(key)
+        # extract keywords
+        path_dict = _extract(template, example)
+        # If we failed and we aren't strict, try again.
+        if not path_dict and not strict:
+            return _extract(os.path.basename(template), os.path.basename(example))
 
         return path_dict
+
 
     def dir(self, filetype, **kwargs):
         """Return the directory containing a file of a given type.
@@ -713,3 +721,41 @@ class Path(BasePath):
 
 class AccessError(Exception):
     pass
+
+
+def _extract(template, example):
+
+    # escape the envvar $, any dots, and forward slashes
+    subtemp = template.replace('$', '\\$') \
+                      .replace('.', '\\.') \
+                      .replace('/', '\/')
+
+    # define named search pattern.
+    named_search = re.sub('{(\w+)}', '(?P<\\1>[\\w\\d+-_]+)', subtemp)
+
+    # fix duplicates by prepending '_' to them.
+    named_terms = re.findall("<\w+>", named_search)
+    for term, count in Counter(named_terms).items():
+        if count > 1:
+            for i in range(count - 1):
+                _ = "_" * (1 + i)
+                new_term = f"<{_}{term.strip('<>')}>"
+                named_search = named_search.replace(term, new_term, 1)
+
+
+    match = re.compile(named_search).search(example)
+    if match is None:
+        return dict()
+
+    path_dict = match.groupdict()
+
+    # remove duplicates.
+    duplicate_keys = []
+    for k, v in path_dict.items():
+        if k.startswith("_") and k.lstrip("_") in path_dict and v == path_dict[k.lstrip("_")]:
+            duplicate_keys.append(k)
+
+    for key in duplicate_keys:
+        path_dict.pop(key)
+
+    return path_dict
